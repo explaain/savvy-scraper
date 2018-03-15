@@ -1,8 +1,29 @@
 # -*- coding: utf-8 -*-
+import pprint, time, calendar, scrapy, requests, html2text
 from bs4 import BeautifulSoup
-import scrapy, requests, html2text
 from scrapy.spiders import Rule
-from scrapy.linkextractors import LinkExtractor
+# from scrapy.linkextractors import LinkExtractor
+from scrapy.selector import Selector
+from algoliasearch import algoliasearch
+
+pp = pprint.PrettyPrinter(indent=4)
+
+googleSitesUrl = 'https://sites.google.com/'
+urlLogin = 'https://accounts.google.com/ServiceLogin'
+urlAuth = 'https://accounts.google.com/ServiceLoginAuth'
+
+organisationID = 'explaain'
+specificSiteID = 'explaain.com'
+myEmail = 'testsavvy3@gmail.com'
+myPassword = 'nakedtest9'
+homepageExtension = '/ourfirstwiki/home'
+
+specificGoogleSitesUrl = googleSitesUrl + specificSiteID
+
+
+
+client = algoliasearch.Client('D3AE3TSULH', '1b36934cc0d93e04ef8f0d5f36ad7607') # This API key allows everything
+algoliaScrapedIndex = client.init_index(organisationID + '__Scraped')
 
 class SessionGoogle:
   def __init__(self, url_login, url_auth, login, pwd):
@@ -21,7 +42,7 @@ class SessionGoogle:
     print(resres)
     print(type(resres))
     print(dir(resres))
-    print(html2text.html2text(resres.content.decode('utf-8')))
+    print(html2text.html2text(resres.content.decode('utf-8'))[:1000])
 
   def get(self, URL):
     return self.ses.get(URL).text
@@ -29,33 +50,49 @@ class SessionGoogle:
 
 class GoogleSitesSpider(scrapy.Spider):
   name = 'gsites'
-  # allowed_domains = ['sites.google.com/explaain.com']
   start_urls = [
-    'https://sites.google.com/explaain.com/ourfirstwiki/home',
+    specificGoogleSitesUrl + homepageExtension,
   ]
 
-  rules = (Rule(LinkExtractor(), callback='parse_item'))
-
-  def __init__(self, url_login=None, url_auth='', login='', pwd='', *args, **kwargs):
+  def __init__(self, *args, **kwargs):
     super(GoogleSitesSpider, self).__init__(*args, **kwargs)
 
-    url_login = 'https://accounts.google.com/ServiceLogin'
-    url_auth = 'https://accounts.google.com/ServiceLoginAuth'
-
-    self.mySession = SessionGoogle(url_login, url_auth, 'testsavvy3@gmail.com', 'nakedtest9')
+    self.mySession = SessionGoogle(urlLogin, urlAuth, myEmail, myPassword)
 
   def parse(self, response):
     print('parse')
-    homepage = self.mySession.get('https://sites.google.com/explaain.com/ourfirstwiki/home')
-    yield {'main': homepage}
-    for link in homepage.css('a'):
-      print('link')
-      print(link)
-      # yield {'main': inputField.extract()}
+    home_url = specificGoogleSitesUrl + homepageExtension
+    homepage = self.mySession.get(home_url)
+    main = store_page(home_url, homepage)
+    print(html2text.html2text(main))
+    # yield {'main': main}
+    urls = [link.css('::attr(href)').extract_first() for link in Selector(text=homepage).css('a')]
+    internalUrls = [url for url in urls if url and (url[0] == '/' or specificGoogleSitesUrl in url)]
+    uniqueInternalUrls = list(set(internalUrls))
+    fullUrls = [googleSitesUrl[:-1] + url if url[0] == '/' else url for url in uniqueInternalUrls]
+    print('Full Internal Urls:', fullUrls)
+    for url in fullUrls:
+      page = self.mySession.get(url)
+      mainSection = store_page(url, page)
+      print(html2text.html2text(mainSection))
+      # yield {'main': mainSection}
 
-  def parse_item(self, response):
-    print('parse_item')
-    yield {'main1': self.mySession.get('https://sites.google.com/explaain.com/ourfirstwiki/home')}
-    # for inputField in response.css('html'):
-    #   print('yielding')
-    #   yield {'main': inputField.extract()}
+def store_page(url, page):
+  sel = Selector(text=page)
+  title = sel.css('title ::text').extract_first()
+  main_html = sel.css('div[role=main]').extract_first()
+  page_dict = {
+    'objectID': url,
+    'url': url,
+    'fileType': 'html',
+    'title': title,
+    'source': specificGoogleSitesUrl,
+    'service': 'gsites',
+    'content': main_html,
+    'organisationID': organisationID,
+    'modified': calendar.timegm(time.gmtime()), # Not ideal!!
+    'created': calendar.timegm(time.gmtime()), # Definitely not right!!!!
+  }
+  pp.pprint(page_dict)
+  algoliaScrapedIndex.save_object(page_dict)
+  return main_html
